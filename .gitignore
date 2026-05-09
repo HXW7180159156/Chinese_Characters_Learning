@@ -1,1 +1,7 @@
-node_modules
+node_modules/
+dist/
+dist-electron/
+release/
+*.log
+_tmp_*.js
+*.tgz

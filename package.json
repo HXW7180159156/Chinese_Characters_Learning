@@ -4,8 +4,10 @@
   "description": "汉字学习APP - 面向学龄前及小学低年级儿童",
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
-    "build": "vite build && tsc -p tsconfig.electron.json && electron-builder",
+    "postinstall": "electron-builder install-app-deps",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "dev": "npm run build:electron && concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
+    "build": "vite build && npm run build:electron && electron-builder",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit"
