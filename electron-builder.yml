@@ -7,12 +7,14 @@ files:
   - dist-electron/**/*
 extraResources: []
 asar: true
+electronDist: node_modules/electron/dist
 nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
   deleteAppDataOnUninstall: false
 win:
+  signAndEditExecutable: false
   target:
     - nsis
 mac:
