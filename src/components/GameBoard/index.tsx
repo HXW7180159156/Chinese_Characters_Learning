@@ -1,535 +1,766 @@
-import { useState, useCallback, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { Character } from '@/types'
-import { getLoadedAllCharacters } from '@data/index'
-
-function getRandomChars(count: number): Character[] {
-  const all = getLoadedAllCharacters()
-  if (all.length === 0) return []
-  const shuffled = [...all].sort(() => Math.random() - 0.5)
-  return shuffled.slice(0, count)
-}
+import { useAllCharacters } from '@/hooks/useCharacterData'
+import { useGameReward } from './useGameReward'
+import {
+  filterCharactersForPractice,
+  getPracticeDifficulty,
+  type PracticeDifficulty,
+  type PracticeSettings,
+} from '@/services/practiceCenter'
+import {
+  buildSentenceHint,
+  createChoiceRounds,
+  createPuzzleRounds,
+  createRadicalFamilies,
+  getDisplayWord,
+  getFallbackEmoji,
+  getPrimaryMeaning,
+  getResultBadge,
+  praiseMessages,
+  randomMessage,
+  retryMessages,
+  shuffleItems,
+  type ChoiceRound,
+  type PuzzlePiece,
+  type PuzzleRound,
+  type RadicalFamily,
+} from './gameUtils'
 
 interface GameProps {
   onDone?: () => void
+  practiceSettings?: PracticeSettings
 }
 
-/* ====== 1. 字形拼图 PuzzleGame ====== */
-const composableChars = getLoadedAllCharacters().filter((c) => c.components.length > 0)
+interface GameShellProps {
+  title: string
+  subtitle: string
+  score: number
+  streak?: number
+  round?: number
+  totalRounds?: number
+  badge?: string
+  children: React.ReactNode
+  footer?: React.ReactNode
+}
 
-export function PuzzleGame({ onDone }: GameProps) {
-  const [current, setCurrent] = useState(() => composableChars[Math.floor(Math.random() * composableChars.length)] || getRandomChars(1)[0])
-  const [selected, setSelected] = useState<string[]>([])
-  const [message, setMessage] = useState('')
-  const [score, setScore] = useState(0)
-
-  const parts = current.components.map((c) => c.char)
-  const shuffled = [...parts].sort(() => Math.random() - 0.5)
-
-  const nextChar = () => {
-    const next = composableChars[Math.floor(Math.random() * composableChars.length)]
-    if (next) setCurrent(next)
-  }
-
-  const handleSelect = (part: string) => {
-    const next = [...selected, part]
-    setSelected(next)
-    if (next.join('') === parts.join('')) {
-      setMessage('🎉 太棒了！拼对啦！')
-      setScore((s) => s + 10)
-      setTimeout(() => {
-        nextChar()
-        setSelected([])
-        setMessage('')
-      }, 1500)
-    } else if (next.length === parts.length) {
-      setMessage('🤔 再试试哦~')
-      setTimeout(() => {
-        setSelected([])
-        setMessage('')
-      }, 1000)
-    }
-  }
-
+function GameShell({ title, subtitle, score, streak = 0, round, totalRounds, badge, children, footer }: GameShellProps) {
   return (
-    <div className="card-kid p-6 max-w-md mx-auto">
-      <div className="text-center mb-4">
-        <div className="text-kid-blue font-bold text-lg mb-1">🧩 字形拼图</div>
-        <div className="text-sm text-gray-400">把部件拼成：</div>
-        <div className="text-6xl font-bold text-gray-800 my-3">{current.char}</div>
-        <div className="text-kid-red">{current.pinyin}</div>
-        <div className="text-xs text-gray-400 mt-1">
-          拖选顺序：{parts.join(' + ')}
+    <div className="card-kid p-6 max-w-md mx-auto relative overflow-hidden">
+      <div className="absolute inset-x-0 top-0 h-2 bg-gradient-to-r from-kid-yellow via-kid-orange to-kid-pink" />
+      <div className="flex items-start justify-between gap-3 mb-4">
+        <div>
+          <div className="text-gray-800 font-extrabold text-xl">{title}</div>
+          <div className="text-sm text-gray-400">{subtitle}</div>
+        </div>
+        {badge && (
+          <div className="rounded-full bg-kid-yellow/20 text-kid-orange px-3 py-1 text-xs font-bold">
+            {badge}
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-3 gap-2 mb-5 text-center">
+        <div className="rounded-2xl bg-kid-bg p-3">
+          <div className="text-xs text-gray-400 mb-1">积分</div>
+          <div className="text-lg font-extrabold text-kid-orange">⭐ {score}</div>
+        </div>
+        <div className="rounded-2xl bg-kid-bg p-3">
+          <div className="text-xs text-gray-400 mb-1">连对</div>
+          <div className="text-lg font-extrabold text-kid-green">🔥 {streak}</div>
+        </div>
+        <div className="rounded-2xl bg-kid-bg p-3">
+          <div className="text-xs text-gray-400 mb-1">进度</div>
+          <div className="text-lg font-extrabold text-kid-blue">{round && totalRounds ? `${round}/${totalRounds}` : '--'}</div>
         </div>
       </div>
 
-      <div className="flex justify-center gap-3 mb-4">
-        {shuffled.map((part, i) => (
-          <motion.button
-            key={i}
-            whileHover={{ scale: 1.15 }}
-            whileTap={{ scale: 0.9 }}
-            onClick={() => handleSelect(part)}
-            disabled={selected.includes(part)}
-            className={`w-16 h-16 rounded-2xl text-2xl font-bold shadow-md transition-all ${
-              selected.includes(part)
-                ? 'bg-gray-200 text-gray-300 cursor-not-allowed'
-                : 'bg-kid-yellow text-gray-800 hover:bg-kid-orange hover:text-white'
-            }`}
-          >
-            {part}
-          </motion.button>
-        ))}
+      {children}
+
+      {footer && <div className="mt-4">{footer}</div>}
+    </div>
+  )
+}
+
+function ResultCard({
+  score,
+  totalRounds,
+  correctCount,
+  onRetry,
+  onDone,
+}: {
+  score: number
+  totalRounds: number
+  correctCount: number
+  onRetry: () => void
+  onDone?: () => void
+}) {
+  const accuracy = totalRounds === 0 ? 0 : Math.round((correctCount / totalRounds) * 100)
+  const badge = getResultBadge(accuracy)
+
+  return (
+    <div className="card-kid p-6 max-w-md mx-auto text-center">
+      <div className="text-6xl mb-3">{badge.icon}</div>
+      <div className="text-2xl font-extrabold text-gray-800 mb-1">{badge.title}</div>
+      <div className="text-sm text-gray-400 mb-4">{badge.message}</div>
+
+      <div className="grid grid-cols-3 gap-3 mb-5">
+        <div className="rounded-2xl bg-kid-bg p-3">
+          <div className="text-xs text-gray-400 mb-1">总积分</div>
+          <div className="text-lg font-extrabold text-kid-orange">{score}</div>
+        </div>
+        <div className="rounded-2xl bg-kid-bg p-3">
+          <div className="text-xs text-gray-400 mb-1">答对</div>
+          <div className="text-lg font-extrabold text-kid-green">{correctCount}/{totalRounds}</div>
+        </div>
+        <div className="rounded-2xl bg-kid-bg p-3">
+          <div className="text-xs text-gray-400 mb-1">准确率</div>
+          <div className="text-lg font-extrabold text-kid-blue">{accuracy}%</div>
+        </div>
       </div>
 
-      <div className="flex justify-center gap-2 mb-4 min-h-[40px]">
-        {parts.map((_, i) => (
-          <div
-            key={i}
-            className={`w-12 h-12 rounded-xl border-2 border-dashed flex items-center justify-center text-xl font-bold transition-all ${
-              selected[i]
-                ? 'border-kid-green bg-kid-green/10 text-kid-green'
-                : 'border-gray-200 text-gray-300'
-            }`}
+      <div className="flex gap-3 justify-center">
+        <button onClick={onRetry} className="btn-primary">再玩一局</button>
+        <button onClick={onDone} className="btn-secondary">返回游戏列表</button>
+      </div>
+    </div>
+  )
+}
+
+function EmptyGameState({ onDone, loading }: { onDone?: () => void; loading: boolean }) {
+  return (
+    <div className="card-kid p-6 max-w-md mx-auto text-center">
+      <div className="text-6xl mb-3">{loading ? '📦' : '📚'}</div>
+      <div className="text-xl font-bold text-kid-blue mb-2">{loading ? '题库加载中...' : '题库还没准备好'}</div>
+      <div className="text-sm text-gray-400 mb-4">
+        {loading ? '正在装满 800 个汉字的练习关卡。' : '请先返回首页进入学习页，等待数据加载完成。'}
+      </div>
+      <button onClick={onDone} className="btn-primary">返回</button>
+    </div>
+  )
+}
+
+/* ====== 1. 字形拼图 PuzzleGame ====== */
+export function PuzzleGame({ onDone, practiceSettings }: GameProps) {
+  const { chars, loading } = useAllCharacters()
+  const rewardGame = useGameReward()
+  const difficulty: PracticeDifficulty = getPracticeDifficulty(practiceSettings || { ageGroup: '5-6', targetLevel: 'all' })
+  const scopedChars = useMemo(() => filterCharactersForPractice(chars, practiceSettings || { ageGroup: '5-6', targetLevel: 'all' }), [chars, practiceSettings])
+  const [roundIndex, setRoundIndex] = useState(0)
+  const [score, setScore] = useState(0)
+  const [streak, setStreak] = useState(0)
+  const [correctCount, setCorrectCount] = useState(0)
+  const [feedback, setFeedback] = useState('')
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [rounds, setRounds] = useState<PuzzleRound[]>([])
+  const [rewardIssued, setRewardIssued] = useState(false)
+
+  useEffect(() => {
+    if (scopedChars.length === 0) return
+    setRounds(createPuzzleRounds(scopedChars, difficulty.roundCount))
+    setRoundIndex(0)
+    setScore(0)
+    setStreak(0)
+    setCorrectCount(0)
+    setFeedback('')
+    setSelectedIds([])
+    setRewardIssued(false)
+  }, [difficulty.roundCount, scopedChars])
+
+  const finished = rounds.length > 0 && roundIndex >= rounds.length
+
+  useEffect(() => {
+    if (!finished || rewardIssued) return
+    setRewardIssued(true)
+    void rewardGame(rounds.map((round) => round.answer), 3)
+  }, [finished, rewardGame, rewardIssued, rounds])
+
+  const currentRound = finished ? null : rounds[roundIndex]
+  const selectedPieces = useMemo(() => {
+    if (!currentRound) return []
+    return selectedIds
+      .map((id) => currentRound.tray.find((piece) => piece.id === id))
+      .filter(Boolean) as PuzzlePiece[]
+  }, [currentRound, selectedIds])
+
+  if (loading || rounds.length === 0) {
+    return <EmptyGameState onDone={onDone} loading={loading} />
+  }
+
+  if (finished || !currentRound) {
+    return (
+      <ResultCard
+        score={score}
+        totalRounds={rounds.length}
+        correctCount={correctCount}
+        onRetry={() => {
+          setRounds(createPuzzleRounds(scopedChars, difficulty.roundCount))
+          setRoundIndex(0)
+          setScore(0)
+          setStreak(0)
+          setCorrectCount(0)
+          setFeedback('')
+          setSelectedIds([])
+          setRewardIssued(false)
+        }}
+        onDone={onDone}
+      />
+    )
+  }
+
+  const handleSelect = (piece: PuzzlePiece) => {
+    if (selectedIds.includes(piece.id)) return
+
+    const nextIds = [...selectedIds, piece.id]
+    const nextPieces = nextIds
+      .map((id) => currentRound.tray.find((item) => item.id === id))
+      .filter(Boolean) as PuzzlePiece[]
+    setSelectedIds(nextIds)
+
+    const isComplete = nextPieces.length === currentRound.slots.length
+    if (!isComplete) return
+
+    const isCorrect = nextPieces.every((piece, index) => piece.char === currentRound.slots[index].char)
+    if (isCorrect) {
+      const nextStreak = streak + 1
+      setFeedback(randomMessage(praiseMessages))
+      setStreak(nextStreak)
+      setCorrectCount((value) => value + 1)
+      setScore((value) => value + 12 + Math.min(8, nextStreak * 2))
+      window.setTimeout(() => {
+        setRoundIndex((value) => value + 1)
+        setSelectedIds([])
+        setFeedback('')
+      }, 900)
+    } else {
+      setFeedback(randomMessage(retryMessages))
+      setStreak(0)
+      window.setTimeout(() => {
+        setSelectedIds([])
+        setFeedback('')
+      }, 850)
+    }
+  }
+
+  const selectedChars = selectedPieces.map((piece) => piece.char).join('')
+  const answer = currentRound.answer
+
+  return (
+    <GameShell
+      title="🧩 字形拼图"
+      subtitle="把部件拼成真正的汉字，像拆乐高一样认识字形"
+      score={score}
+      streak={streak}
+      round={roundIndex + 1}
+      totalRounds={rounds.length}
+      badge={`Level ${answer.level} · ${answer.theme}`}
+      footer={
+        <div className="flex justify-between items-center text-sm">
+          <button
+            onClick={() => {
+              setSelectedIds([])
+              setFeedback('清空拼图，再试一次。')
+              window.setTimeout(() => setFeedback(''), 600)
+            }}
+            className="text-gray-400 underline"
           >
-            {selected[i] || '?'}
-          </div>
-        ))}
+            重新摆放
+          </button>
+          <button onClick={onDone} className="text-gray-400 underline">退出</button>
+        </div>
+      }
+    >
+      <div className="text-center mb-4">
+        <div className="text-6xl font-extrabold text-gray-800 mb-2">{answer.char}</div>
+        <div className="text-kid-red font-bold mb-1">{answer.pinyin}</div>
+        <div className="text-xs text-gray-400">提示：这个字和“{getDisplayWord(answer)}”有关</div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2 mb-4">
+        {currentRound.tray.map((piece) => {
+          const picked = selectedIds.includes(piece.id)
+          return (
+            <motion.button
+              key={piece.id}
+              whileHover={{ scale: picked ? 1 : 1.05 }}
+              whileTap={{ scale: picked ? 1 : 0.95 }}
+              onClick={() => handleSelect(piece)}
+              disabled={picked}
+              className={`rounded-2xl px-3 py-4 text-center shadow-md transition-all ${
+                picked
+                  ? 'bg-gray-100 text-gray-300 cursor-not-allowed'
+                  : piece.source === 'answer'
+                    ? 'bg-kid-yellow text-gray-800 hover:bg-kid-orange hover:text-white'
+                    : 'bg-kid-blue/10 text-kid-blue hover:bg-kid-blue hover:text-white'
+              }`}
+            >
+              <div className="text-3xl font-extrabold">{piece.char}</div>
+              <div className="text-[10px] mt-1 opacity-70">{piece.role}</div>
+            </motion.button>
+          )
+        })}
+      </div>
+
+      <div className="rounded-2xl bg-kid-bg p-4 mb-3">
+        <div className="text-xs text-gray-400 mb-2 text-center">拼图轨道</div>
+        <div className="flex justify-center gap-2 mb-2">
+          {currentRound.slots.map((slot, index) => {
+            const piece = selectedPieces[index]
+            return (
+              <div
+                key={slot.id}
+                className={`w-14 h-14 rounded-2xl border-2 border-dashed flex items-center justify-center text-2xl font-bold ${
+                  piece ? 'border-kid-green bg-white text-kid-green' : 'border-gray-300 text-gray-300'
+                }`}
+              >
+                {piece?.char || '?'}
+              </div>
+            )
+          })}
+        </div>
+        <div className="text-center text-sm text-gray-500 min-h-[24px]">
+          {selectedChars ? `你正在拼：${selectedChars}` : '按顺序点选部件，把字拼出来'}
+        </div>
       </div>
 
       <AnimatePresence>
-        {message && (
+        {feedback && (
           <motion.div
-            initial={{ scale: 0 }}
-            animate={{ scale: 1 }}
-            exit={{ scale: 0 }}
-            className="text-center text-lg font-bold text-kid-green"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="text-center font-bold text-kid-green min-h-[28px]"
           >
-            {message}
+            {feedback}
           </motion.div>
         )}
       </AnimatePresence>
-
-      <div className="text-center mt-3">
-        <span className="text-kid-orange font-bold">⭐ {score} 分</span>
-        <button onClick={onDone} className="ml-4 text-sm text-gray-400 underline">
-          退出
-        </button>
-      </div>
-    </div>
+    </GameShell>
   )
 }
 
 /* ====== 2. 部首归类 SortGame ====== */
-const radicalGroups: Record<string, string> = {
-  '氵': 'water', '木': 'tree', '口': 'mouth', '女': 'female',
-  '扌': 'hand', '亻': 'person', '艹': 'grass', '火': 'fire',
-}
-
-export function SortGame({ onDone }: GameProps) {
+export function SortGame({ onDone, practiceSettings }: GameProps) {
+  const { chars, loading } = useAllCharacters()
+  const rewardGame = useGameReward()
+  const difficulty: PracticeDifficulty = getPracticeDifficulty(practiceSettings || { ageGroup: '5-6', targetLevel: 'all' })
+  const scopedChars = useMemo(() => filterCharactersForPractice(chars, practiceSettings || { ageGroup: '5-6', targetLevel: 'all' }), [chars, practiceSettings])
+  const [families, setFamilies] = useState<RadicalFamily[]>([])
+  const [matches, setMatches] = useState<Record<string, Character[]>>({})
   const [score, setScore] = useState(0)
-  const [dragged, setDragged] = useState<string | null>(null)
-  const [matches, setMatches] = useState<Record<string, string[]>>({})
+  const [streak, setStreak] = useState(0)
+  const [feedback, setFeedback] = useState('')
+  const [correctCount, setCorrectCount] = useState(0)
+  const [rewardIssued, setRewardIssued] = useState(false)
 
-  const radicalKeys = Object.keys(radicalGroups).slice(0, 3)
-  const chars = getLoadedAllCharacters()
-    .filter((c) => radicalKeys.includes(c.radical))
-    .slice(0, 6)
-    .sort(() => Math.random() - 0.5)
+  useEffect(() => {
+    if (scopedChars.length === 0) return
+    setFamilies(createRadicalFamilies(scopedChars, difficulty.familyCount, difficulty.charsPerFamily))
+    setMatches({})
+    setScore(0)
+    setStreak(0)
+    setCorrectCount(0)
+    setFeedback('')
+    setRewardIssued(false)
+  }, [difficulty.charsPerFamily, difficulty.familyCount, scopedChars])
 
-  const handleDrop = (radical: string, char: string) => {
-    const match = getLoadedAllCharacters().find((c) => c.char === char)
-    if (match && match.radical === radical) {
-      setMatches((m) => ({
-        ...m,
-        [radical]: [...(m[radical] || []), char],
-      }))
-      setScore((s) => s + 5)
-      setDragged(null)
-    }
+  const totalTargets = families.reduce((sum, family) => sum + family.characters.length, 0)
+  const placedIds = new Set(Object.values(matches).flat().map((character) => character.id))
+  const pool = shuffleItems(families.flatMap((family) => family.characters)).filter((character) => !placedIds.has(character.id))
+  const finished = families.length > 0 && pool.length === 0
+
+  useEffect(() => {
+    if (!finished || rewardIssued) return
+    setRewardIssued(true)
+    void rewardGame(families.flatMap((family) => family.characters), 3)
+  }, [families, finished, rewardGame, rewardIssued])
+
+  if (loading || families.length === 0) {
+    return <EmptyGameState onDone={onDone} loading={loading} />
   }
 
-  const remaining = chars.filter(
-    (c) => !Object.values(matches).flat().includes(c.char)
-  )
+  if (finished) {
+    return (
+      <ResultCard
+        score={score}
+        totalRounds={totalTargets}
+        correctCount={correctCount}
+        onRetry={() => {
+          setFamilies(createRadicalFamilies(scopedChars, difficulty.familyCount, difficulty.charsPerFamily))
+          setMatches({})
+          setScore(0)
+          setStreak(0)
+          setCorrectCount(0)
+          setFeedback('')
+          setRewardIssued(false)
+        }}
+        onDone={onDone}
+      />
+    )
+  }
+
+  const handleDrop = (family: RadicalFamily, character: Character) => {
+    const belongs = family.characters.some((item) => item.id === character.id)
+    if (belongs) {
+      const nextStreak = streak + 1
+      setMatches((current) => ({
+        ...current,
+        [family.radical]: [...(current[family.radical] || []), character],
+      }))
+      setScore((value) => value + 6 + Math.min(10, nextStreak * 2))
+      setStreak(nextStreak)
+      setCorrectCount((value) => value + 1)
+      setFeedback(`🎯 ${character.char} 找到 ${family.radical} 家啦！`)
+    } else {
+      setStreak(0)
+      setFeedback(`🧭 ${character.char} 不在 ${family.radical} 家，再看看偏旁。`)
+    }
+    window.setTimeout(() => setFeedback(''), 900)
+  }
 
   return (
-    <div className="card-kid p-6 max-w-md mx-auto">
-      <div className="text-center mb-4">
-        <div className="text-kid-green font-bold text-lg mb-1">🏘️ 部首家族</div>
-        <div className="text-sm text-gray-400">把汉字拖到对应的部首家</div>
+    <GameShell
+      title="🏘️ 部首家族"
+      subtitle="把汉字送回对应的偏旁小屋，认识字和字之间的家族关系"
+      score={score}
+      streak={streak}
+      round={correctCount + 1}
+      totalRounds={totalTargets}
+      badge="4个部首小屋"
+      footer={<button onClick={onDone} className="text-sm text-gray-400 underline">退出</button>}
+    >
+      <div className="grid grid-cols-2 gap-3 mb-5">
+        {families.map((family) => {
+          const placed = matches[family.radical] || []
+          return (
+            <div
+              key={family.radical}
+              className="rounded-3xl bg-gradient-to-br from-white to-kid-bg p-4 border-2 border-dashed border-kid-green/30 min-h-[140px]"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => {
+                event.preventDefault()
+                const id = Number(event.dataTransfer.getData('text/plain'))
+                const character = pool.find((item) => item.id === id)
+                if (character) handleDrop(family, character)
+              }}
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <div className="w-11 h-11 rounded-2xl bg-kid-green/15 text-kid-green font-extrabold text-2xl flex items-center justify-center">
+                  {family.radical}
+                </div>
+                <div>
+                  <div className="font-bold text-gray-800">{family.label}</div>
+                  <div className="text-xs text-gray-400">收集 {family.characters.length} 个字</div>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {placed.map((character) => (
+                  <motion.div
+                    key={character.id}
+                    initial={{ scale: 0.7, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    className="px-3 py-2 rounded-2xl bg-white shadow text-xl font-bold text-kid-blue"
+                  >
+                    {character.char}
+                  </motion.div>
+                ))}
+              </div>
+            </div>
+          )
+        })}
       </div>
 
-      <div className="grid grid-cols-3 gap-2 mb-6">
-        {radicalKeys.map((radical) => (
-          <div
-            key={radical}
-            className="bg-kid-bg rounded-2xl p-3 min-h-[80px] text-center border-2 border-dashed border-gray-200 hover:border-kid-green transition-colors"
-            onDragOver={((e: React.DragEvent) => e.preventDefault()) as any}
-            onDrop={((e: React.DragEvent) => {
-              e.preventDefault()
-              const char = e.dataTransfer.getData('text')
-              handleDrop(radical, char)
-            }) as any}
-          >
-            <div className="text-2xl font-bold text-kid-blue">{radical}</div>
-            <div className="text-xs text-gray-400 mb-2">部首</div>
-            {(matches[radical] || []).map((c, i) => (
-              <motion.span
-                key={i}
-                initial={{ scale: 0 }}
-                animate={{ scale: 1 }}
-                className="inline-block text-xl font-bold mx-0.5 px-1 bg-white rounded-lg"
-              >
-                {c}
-              </motion.span>
-            ))}
-          </div>
-        ))}
+      <div className="rounded-3xl bg-kid-bg p-4 mb-3">
+        <div className="text-sm font-bold text-gray-700 mb-3">待归位的汉字</div>
+        <div className="flex flex-wrap justify-center gap-2">
+          {pool.map((character) => (
+            <button
+              key={character.id}
+              draggable
+              onDragStart={(event) => event.dataTransfer.setData('text/plain', String(character.id))}
+              className="rounded-2xl bg-white shadow-md px-4 py-3 cursor-grab active:cursor-grabbing hover:scale-105 active:scale-95 transition-transform"
+            >
+              <div className="text-3xl font-extrabold text-gray-800">{character.char}</div>
+              <div className="text-[10px] text-gray-400 mt-1">{character.pinyin}</div>
+            </button>
+          ))}
+        </div>
       </div>
 
-      <div className="flex flex-wrap justify-center gap-2">
-        {remaining.map((c, i) => (
-          <motion.button
-            key={i}
-            draggable
-            onDragStart={((e: React.DragEvent<HTMLButtonElement>) => {
-              e.dataTransfer.setData('text', c.char)
-            }) as any}
-            whileHover={{ scale: 1.1 }}
-            className="w-14 h-14 rounded-xl bg-white shadow-md text-2xl font-bold hover:bg-kid-yellow/20 transition-colors cursor-grab active:cursor-grabbing"
-          >
-            {c.char}
-          </motion.button>
-        ))}
-        {remaining.length === 0 && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="text-kid-green font-bold text-lg"
-          >
-            🎉 全部归位！太厉害了！
-          </motion.div>
-        )}
-      </div>
-
-      <div className="text-center mt-4">
-        <span className="text-kid-orange font-bold">⭐ {score} 分</span>
-        <button onClick={onDone} className="ml-4 text-sm text-gray-400 underline">
-          退出
-        </button>
-      </div>
-    </div>
+      <div className="text-center text-sm text-gray-500 min-h-[24px]">{feedback || '拖动汉字，把它送回正确的偏旁小屋。'}</div>
+    </GameShell>
   )
 }
 
 /* ====== 3. 看图选字 MatchGame ====== */
-const emojiMap: Record<string, string> = {
-  '山': '⛰️', '水': '💧', '火': '🔥', '木': '🌳', '日': '☀️',
-  '月': '🌙', '星': '⭐', '雨': '🌧️', '云': '☁️', '风': '💨',
-  '人': '🧑', '手': '✋', '目': '👀', '口': '👄', '心': '❤️',
-  '马': '🐴', '牛': '🐮', '羊': '🐑', '鸟': '🐦', '鱼': '🐟',
-  '虫': '🐛', '花': '🌸', '草': '🌱', '竹': '🎋', '果': '🍎',
-  '妈': '👩', '爸': '👨', '学': '📚', '休': '😴',
-  '大': '🐘', '小': '🐜', '土': '🟫', '石': '🪨', '川': '🏞️',
-  '田': '🌾', '女': '👧', '子': '👶', '好': '👍', '白': '⬜',
-  '力': '💪', '男': '👦', '足': '🦶', '牙': '🦷', '头': '🗣️',
-  '身': '🚶', '耳': '👂', '太': '☀️', '天': '🌤️', '中': '🎯',
-  '本': '📕', '末': '📄', '上': '⬆️', '下': '⬇️', '一': '1️⃣',
-  '二': '2️⃣', '三': '3️⃣', '从': '👥', '众': '👨‍👩‍👧‍👦',
-  '尖': '📐', '尘': '💨',
-  '林': '🌲', '森': '🏕️', '明': '💡', '看': '🔍',
-  '江': '🌊', '河': '🏞️', '海': '🌊', '湖': '🏖️', '清': '💎',
-  '树': '🌴', '根': '🪵', '枝': '🌿', '叶': '🍃',
-  '吃': '🍽️', '喝': '🥤', '叫': '📢', '唱': '🎤', '吹': '💨',
-  '打': '👊', '拍': '👏', '拉': '🤝', '抱': '🤗',
-  '你': '👉', '他': '👤', '们': '👥', '过': '🚶', '远': '🔭', '近': '🏠', '进': '🚪',
-  '爷': '👴', '奶': '👵', '姐': '👩', '妹': '👧', '弟': '👦',
-  '伯': '👨', '叔': '🧔', '姑': '👩', '姨': '👩',
-  '朋': '🤝', '友': '👫', '亲': '❤️', '爱': '💕', '家': '🏠',
-  '孩': '👶', '孙': '👼', '母': '👩‍👧', '父': '👨‍👦', '儿': '🧒',
-  '妇': '👩', '老': '🧓', '师': '👩‍🏫', '生': '🌱', '活': '💧',
-  '姓': '📛', '名': '🏷️', '自': '🙋', '己': '🪞', '体': '🏃',
-  '跑': '🏃', '跳': '🤸', '走': '🚶', '飞': '🕊️',
-  '笑': '😄', '哭': '😢', '说': '🗣️', '听': '👂',
-  '思': '🤔', '想': '💭', '忘': '🤷', '记': '📝', '念': '💌',
-  '快': '⚡', '慢': '🐢', '忙': '🐝', '帮': '🤝', '让': '🎁',
-  '拿': '✊', '放': '⬇️', '给': '🎁', '回': '↩️', '问': '❓', '答': '✅',
-  '教': '📖', '习': '✍️', '练': '🎯', '写': '✏️', '画': '🎨',
-  '桌': '🪑', '椅': '🪑', '床': '🛏️', '灯': '💡', '杯': '🥛',
-  '碗': '🍚', '筷': '🥢', '锅': '🍲', '刀': '🔪',
-  '书': '📖', '笔': '🖊️', '纸': '📄', '伞': '☂️',
-  '衣': '👕', '帽': '🎩', '鞋': '👟',
-  '房': '🏘️', '窗': '🪟', '门': '🚪',
-  '路': '🛣️', '桥': '🌉', '船': '⛵', '车': '🚗',
-  '钱': '💰', '钟': '🕐', '镜': '🪞', '药': '💊', '茶': '🍵', '饭': '🍚', '菜': '🥬',
-  '美': '🌸', '善': '🤲', '真': '✅',
-  '高': '🦒', '低': '📉', '深': '🌊', '强': '💪', '弱': '🐣',
-  '热': '🔥', '冷': '❄️', '新': '✨', '旧': '📜',
-  '对': '✅', '错': '❌', '能': '🦸', '会': '🎓',
-  '可': '👍', '以': '🔧', '因': '🔗', '常': '🔄', '非': '🚫',
-  '才': '🌱', '全': '💯', '正': '➡️', '永': '♾️', '直': '📏', '平': '⚖️',
-  '科': '🔬', '机': '🤖', '算': '🧮', '网': '🕸️', '码': '💻',
-  '史': '📜', '历': '📅', '文': '📝', '武': '🥋', '舞': '💃',
-  '汉': '🀄', '国': '🇨🇳', '旗': '🚩', '龙': '🐉', '凤': '🦚',
-  '岁': '🎂', '节': '🎊', '神': '✨', '京': '🏯', '华': '🏵️',
-  '城': '🏰', '园': '🏡', '聪': '🦉', '梦': '💤', '色': '🎨', '世': '🌍',
-  '春': '🌸', '夏': '☀️', '秋': '🍂', '冬': '⛄',
-  '冰': '🧊', '雪': '❄️', '雷': '⚡', '地': '🌏', '空': '🌌',
-  '金': '🥇', '玉': '💎', '泉': '⛲', '岛': '🏝️', '沙': '🏖️',
-  '阳': '☀️', '虹': '🌈', '浪': '🌊',
-  '松': '🌲', '梅': '🌸', '兰': '🌺', '菊': '🏵️', '荷': '🪷', '莲': '🪷',
-  '桃': '🍑', '柳': '🌿', '苗': '🌱', '品': '⭐', '晶': '💎',
-  '鸣': '🐦', '囚': '🔒', '泪': '💧', '灾': '🔥', '安': '🛡️',
-  '间': '⏱️', '早': '🌅', '香': '🌺', '坐': '🪑', '立': '🧍',
-  '光': '💡', '音': '🎵', '乐': '🎶', '多': '📊', '少': '📉',
-  '分': '✂️', '电': '⚡', '米': '🍚', '瓜': '🍉', '长': '📏', '气': '💨',
-  '万': '🔢', '青': '💚',
-}
+export function MatchGame({ onDone, practiceSettings }: GameProps) {
+  const { chars, loading } = useAllCharacters()
+  const rewardGame = useGameReward()
+  const difficulty: PracticeDifficulty = getPracticeDifficulty(practiceSettings || { ageGroup: '5-6', targetLevel: 'all' })
+  const scopedChars = useMemo(() => filterCharactersForPractice(chars, practiceSettings || { ageGroup: '5-6', targetLevel: 'all' }), [chars, practiceSettings])
+  const [rounds, setRounds] = useState<ChoiceRound[]>([])
+  const [roundIndex, setRoundIndex] = useState(0)
+  const [score, setScore] = useState(0)
+  const [streak, setStreak] = useState(0)
+  const [correctCount, setCorrectCount] = useState(0)
+  const [feedback, setFeedback] = useState('')
+  const [rewardIssued, setRewardIssued] = useState(false)
 
-function getFallbackEmoji(c: Character): string {
-  if (emojiMap[c.char]) return emojiMap[c.char]
-  const themeIcons: Record<string, string> = {
-    '自然': '🌿', '身体': '🧍', '家庭': '👨‍👩‍👧', '动作': '🏃',
-    '器物': '🔧', '抽象': '💭', '科技': '💻', '历史': '📜', '生活': '🏠',
-    '社会': '👥',
+  useEffect(() => {
+    if (scopedChars.length === 0) return
+    setRounds(createChoiceRounds(scopedChars, difficulty.roundCount))
+    setRoundIndex(0)
+    setScore(0)
+    setStreak(0)
+    setCorrectCount(0)
+    setFeedback('')
+    setRewardIssued(false)
+  }, [difficulty.roundCount, scopedChars])
+
+  const finished = rounds.length > 0 && roundIndex >= rounds.length
+
+  useEffect(() => {
+    if (!finished || rewardIssued) return
+    setRewardIssued(true)
+    void rewardGame(rounds.map((item) => item.answer), 3)
+  }, [finished, rewardGame, rewardIssued, rounds])
+
+  if (loading || rounds.length === 0) {
+    return <EmptyGameState onDone={onDone} loading={loading} />
   }
-  const constructIcons: Record<string, string> = {
-    '象形': '🖼️', '指事': '☝️', '会意': '🧩', '形声': '🔤',
-  }
-  return themeIcons[c.theme] || constructIcons[c.constructionType] || '🀄'
-}
 
-export function MatchGame({ onDone }: GameProps) {
-  const [chars] = useState(() => {
-    const all = getLoadedAllCharacters().filter((c) => c.components.length === 0 || emojiMap[c.char])
-    const shuffled = [...all].sort(() => Math.random() - 0.5)
-    return shuffled.slice(0, 5)
-  })
-
-  if (chars.length === 0) {
+  const round = finished ? null : rounds[roundIndex]
+  if (finished || !round) {
     return (
-      <div className="card-kid p-6 max-w-md mx-auto text-center">
-        <div className="text-6xl mb-3">📚</div>
-        <div className="text-xl font-bold text-kid-green mb-2">数据加载中</div>
-        <div className="text-kid-orange font-bold text-lg mb-4">请先完成 Level 1 学习</div>
-        <button onClick={onDone} className="btn-primary">返回</button>
-      </div>
+      <ResultCard
+        score={score}
+        totalRounds={rounds.length}
+        correctCount={correctCount}
+        onRetry={() => {
+          setRounds(createChoiceRounds(scopedChars, difficulty.roundCount))
+          setRoundIndex(0)
+          setScore(0)
+          setStreak(0)
+          setCorrectCount(0)
+          setFeedback('')
+          setRewardIssued(false)
+        }}
+        onDone={onDone}
+      />
     )
   }
 
-  const charsRef = chars
-  return <MatchGameInner chars={charsRef} onDone={onDone || (() => {})} />
-}
-
-function MatchGameInner({ chars, onDone }: { chars: Character[]; onDone: () => void }) {
-  const [round, setRound] = useState(0)
-  const [score, setScore] = useState(0)
-  const [feedback, setFeedback] = useState('')
-
-  const answer = chars[round]
-  const distractors = useMemo(() => {
-    return getLoadedAllCharacters()
-      .filter((c) => c.id !== answer?.id)
-      .sort(() => Math.random() - 0.5)
-      .slice(0, 3)
-  }, [answer?.id])
-  const choices = useMemo(() => {
-    if (!answer) return []
-    return [answer, ...distractors].sort(() => Math.random() - 0.5)
-  }, [answer, distractors])
+  const sentenceHint = buildSentenceHint(round.answer.sentence, round.answer.char)
 
   const handlePick = (choice: Character) => {
-    if (choice.id === answer.id) {
-      setFeedback('🎉 对了！')
-      setScore((s) => s + 10)
-      setTimeout(() => {
-        if (round < chars.length - 1) {
-          setRound((r) => r + 1)
-          setFeedback('')
-        } else {
-          setFeedback('🏆 全部答对！')
-        }
-      }, 800)
+    if (choice.id === round.answer.id) {
+      const nextStreak = streak + 1
+      setFeedback(randomMessage(praiseMessages))
+      setScore((value) => value + 10 + Math.min(10, nextStreak * 2))
+      setCorrectCount((value) => value + 1)
+      setStreak(nextStreak)
+      window.setTimeout(() => {
+        setRoundIndex((value) => value + 1)
+        setFeedback('')
+      }, 900)
     } else {
-      setFeedback('😅 再试试~')
-      setTimeout(() => setFeedback(''), 600)
+      setFeedback(`😅 不是“${choice.char}”，试试再看看图和线索。`)
+      setStreak(0)
+      window.setTimeout(() => setFeedback(''), 800)
     }
   }
 
-  if (!answer || round >= chars.length) {
-    return (
-      <div className="card-kid p-6 max-w-md mx-auto text-center">
-        <div className="text-6xl mb-3">🏆</div>
-        <div className="text-xl font-bold text-kid-green mb-2">游戏完成！</div>
-        <div className="text-kid-orange font-bold text-lg mb-4">⭐ {score} 分</div>
-        <button
-          onClick={onDone}
-          className="btn-primary"
-        >
-          再来一局
-        </button>
-      </div>
-    )
-  }
-
   return (
-    <div className="card-kid p-6 max-w-md mx-auto">
+    <GameShell
+      title="🖼️ 看图识画"
+      subtitle="看图、看线索、看例句，把汉字认出来"
+      score={score}
+      streak={streak}
+      round={roundIndex + 1}
+      totalRounds={rounds.length}
+      badge={`${round.answer.theme} · ${round.answer.constructionType}`}
+      footer={<button onClick={onDone} className="text-sm text-gray-400 underline">退出</button>}
+    >
       <div className="text-center mb-4">
-        <div className="text-kid-blue font-bold text-lg mb-1">🖼️ 看图识画</div>
-        <div className="text-sm text-gray-400">看图画，选对的汉字</div>
-        <div className="text-8xl my-4">{answer ? getFallbackEmoji(answer) : '❓'}</div>
+        <div className="text-8xl mb-4">{getFallbackEmoji(round.answer)}</div>
+        <div className="rounded-2xl bg-kid-bg p-3 text-sm text-gray-600 space-y-1">
+          <div>线索词：<span className="font-bold text-kid-blue">{getDisplayWord(round.answer)}</span></div>
+          {sentenceHint && <div>例句提示：{sentenceHint}</div>}
+          <div className="text-kid-orange">意思提示：{getPrimaryMeaning(round.answer)}</div>
+        </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        {choices.map((choice, i) => (
+      <div className="grid grid-cols-2 gap-3 mb-3">
+        {round.choices.map((choice) => (
           <motion.button
-            key={i}
-            whileHover={{ scale: 1.05 }}
+            key={choice.id}
+            whileHover={{ scale: 1.04 }}
             whileTap={{ scale: 0.95 }}
             onClick={() => handlePick(choice)}
-            className="bg-white shadow-md rounded-2xl p-4 text-center hover:bg-kid-yellow/20 transition-colors"
+            className="rounded-3xl bg-white shadow-md p-4 text-center hover:bg-kid-yellow/15 transition-colors"
           >
-            <div className="text-3xl font-bold">{choice.char}</div>
+            <div className="text-4xl font-extrabold text-gray-800 mb-1">{choice.char}</div>
             <div className="text-xs text-gray-400">{choice.pinyin}</div>
           </motion.button>
         ))}
       </div>
 
-      <AnimatePresence>
-        {feedback && (
-          <motion.div
-            initial={{ scale: 0, y: 10 }}
-            animate={{ scale: 1, y: 0 }}
-            exit={{ scale: 0 }}
-            className="text-center text-lg font-bold mt-3 text-kid-green"
-          >
-            {feedback}
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <div className="text-center mt-3">
-        <span className="text-kid-orange font-bold">⭐ {score} 分</span>
-        <span className="ml-4 text-sm text-gray-300">{round + 1}/{chars.length}</span>
-        <button onClick={onDone} className="ml-4 text-sm text-gray-400 underline">
-          退出
-        </button>
-      </div>
-    </div>
+      <div className="text-center text-sm text-gray-500 min-h-[24px]">{feedback || '先看图，再结合词语和例句想一想。'}</div>
+    </GameShell>
   )
 }
 
 /* ====== 5. 听音找字 ListenGame ====== */
-export function ListenGame({ onDone }: GameProps) {
-  const [round, setRound] = useState(0)
+export function ListenGame({ onDone, practiceSettings }: GameProps) {
+  const { chars, loading } = useAllCharacters()
+  const rewardGame = useGameReward()
+  const difficulty: PracticeDifficulty = getPracticeDifficulty(practiceSettings || { ageGroup: '5-6', targetLevel: 'all' })
+  const scopedChars = useMemo(() => filterCharactersForPractice(chars, practiceSettings || { ageGroup: '5-6', targetLevel: 'all' }), [chars, practiceSettings])
+  const [rounds, setRounds] = useState<ChoiceRound[]>([])
+  const [roundIndex, setRoundIndex] = useState(0)
   const [score, setScore] = useState(0)
+  const [streak, setStreak] = useState(0)
+  const [correctCount, setCorrectCount] = useState(0)
   const [feedback, setFeedback] = useState('')
-  const [showPinyin, setShowPinyin] = useState(false)
+  const [showHint, setShowHint] = useState(false)
+  const [rewardIssued, setRewardIssued] = useState(false)
 
-  const chars = getRandomChars(5)
-  const answer = chars[round]
-  const options = getRandomChars(5).filter((c) => c.id !== answer?.id).slice(0, 3)
-  const choices = answer ? [answer, ...options].sort(() => Math.random() - 0.5) : []
+  useEffect(() => {
+    if (scopedChars.length === 0) return
+    setRounds(createChoiceRounds(scopedChars, difficulty.roundCount))
+    setRoundIndex(0)
+    setScore(0)
+    setStreak(0)
+    setCorrectCount(0)
+    setFeedback('')
+    setShowHint(false)
+    setRewardIssued(false)
+  }, [difficulty.roundCount, scopedChars])
 
-  const handlePick = (choice: Character) => {
-    if (!answer) return
-    if (choice.id === answer.id) {
-      setFeedback('🎉 答对啦！')
-      setScore((s) => s + 10)
-      setTimeout(() => {
-        if (round < chars.length - 1) {
-          setRound((r) => r + 1)
-          setShowPinyin(false)
-          setFeedback('')
-        } else {
-          setFeedback('🏆 听力小达人！')
-        }
-      }, 800)
-    } else {
-      setFeedback('😅 再听听看~')
-      setTimeout(() => setFeedback(''), 600)
-    }
+  useEffect(() => {
+    setShowHint(false)
+  }, [roundIndex])
+
+  const finished = rounds.length > 0 && roundIndex >= rounds.length
+
+  useEffect(() => {
+    if (!finished || rewardIssued) return
+    setRewardIssued(true)
+    void rewardGame(rounds.map((item) => item.answer), 3)
+  }, [finished, rewardGame, rewardIssued, rounds])
+
+  if (loading || rounds.length === 0) {
+    return <EmptyGameState onDone={onDone} loading={loading} />
   }
 
-  if (!answer || round >= chars.length) {
+  const round = finished ? null : rounds[roundIndex]
+  if (finished || !round) {
     return (
-      <div className="card-kid p-6 max-w-md mx-auto text-center">
-        <div className="text-6xl mb-3">🏆</div>
-        <div className="text-xl font-bold text-kid-green mb-2">游戏完成！</div>
-        <div className="text-kid-orange font-bold text-lg mb-4">⭐ {score} 分</div>
-        <button onClick={onDone} className="btn-primary">再来一局</button>
-      </div>
+      <ResultCard
+        score={score}
+        totalRounds={rounds.length}
+        correctCount={correctCount}
+        onRetry={() => {
+          setRounds(createChoiceRounds(scopedChars, difficulty.roundCount))
+          setRoundIndex(0)
+          setScore(0)
+          setStreak(0)
+          setCorrectCount(0)
+          setFeedback('')
+          setShowHint(false)
+          setRewardIssued(false)
+        }}
+        onDone={onDone}
+      />
     )
   }
 
-  return (
-    <div className="card-kid p-6 max-w-md mx-auto">
-      <div className="text-center mb-4">
-        <div className="text-kid-yellow font-bold text-lg mb-1">👂 听音找字</div>
-        <div className="text-sm text-gray-400 mb-3">听读音，选出正确的汉字</div>
+  const speakAnswer = () => {
+    if (!('speechSynthesis' in window)) return
+    window.speechSynthesis.cancel()
+    const utterance = new SpeechSynthesisUtterance(round.answer.char)
+    utterance.lang = 'zh-CN'
+    utterance.rate = 0.75
+    utterance.pitch = 1.05
+    window.speechSynthesis.speak(utterance)
+  }
 
+  const handlePick = (choice: Character) => {
+    if (choice.id === round.answer.id) {
+      const nextStreak = streak + 1
+      setFeedback(randomMessage(praiseMessages))
+      setScore((value) => value + 10 + Math.min(10, nextStreak * 2))
+      setCorrectCount((value) => value + 1)
+      setStreak(nextStreak)
+      window.setTimeout(() => {
+        setRoundIndex((value) => value + 1)
+        setFeedback('')
+      }, 900)
+    } else {
+      setFeedback(`👂 不是“${choice.char}”，再听一遍试试。`)
+      setStreak(0)
+      window.setTimeout(() => setFeedback(''), 800)
+    }
+  }
+
+  return (
+    <GameShell
+      title="👂 听音找字"
+      subtitle="听发音、看词语提示，从多个汉字里找出正确答案"
+      score={score}
+      streak={streak}
+      round={roundIndex + 1}
+      totalRounds={rounds.length}
+      badge={`Level ${round.answer.level}`}
+      footer={<button onClick={onDone} className="text-sm text-gray-400 underline">退出</button>}
+    >
+      <div className="text-center mb-4">
         <motion.button
-          whileHover={{ scale: 1.1 }}
-          whileTap={{ scale: 0.9 }}
-          onClick={() => {
-            setShowPinyin(true)
-            if ('speechSynthesis' in window) {
-              const utterance = new SpeechSynthesisUtterance(answer.char)
-              utterance.lang = 'zh-CN'
-              utterance.rate = 0.8
-              speechSynthesis.speak(utterance)
-            }
-          }}
-          className="w-20 h-20 rounded-full bg-kid-yellow shadow-lg flex items-center justify-center text-3xl mb-2 hover:bg-kid-orange transition-colors"
+          whileHover={{ scale: 1.06 }}
+          whileTap={{ scale: 0.94 }}
+          onClick={speakAnswer}
+          className="w-24 h-24 rounded-full bg-gradient-to-br from-kid-yellow to-kid-orange shadow-lg text-4xl mb-3"
         >
           🔊
         </motion.button>
-        <div className="text-xs text-gray-400">点击喇叭听读音</div>
+        <div className="text-sm text-gray-500 mb-3">点一下喇叭，听这个字怎么读</div>
 
-        {showPinyin && (
-          <motion.div
-            initial={{ opacity: 0, y: 5 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mt-2 text-kid-red font-bold text-lg"
-          >
-            {answer.pinyin}
-          </motion.div>
-        )}
+        <div className="rounded-2xl bg-kid-bg p-3 text-sm text-gray-600 space-y-1">
+          <div>词语提示：<span className="font-bold text-kid-blue">{getDisplayWord(round.answer)}</span></div>
+          <div>主题提示：<span className="font-bold text-kid-purple">{round.answer.theme}</span></div>
+          {showHint && <div className="text-kid-red font-bold">拼音提示：{round.answer.pinyin}</div>}
+        </div>
+
+        <button
+          onClick={() => setShowHint((value) => !value)}
+          className="mt-3 text-sm text-gray-400 underline"
+        >
+          {showHint ? '隐藏拼音提示' : '显示拼音提示'}
+        </button>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        {choices.map((choice, i) => (
+      <div className="grid grid-cols-2 gap-3 mb-3">
+        {round.choices.map((choice) => (
           <motion.button
-            key={i}
-            whileHover={{ scale: 1.05 }}
+            key={choice.id}
+            whileHover={{ scale: 1.04 }}
             whileTap={{ scale: 0.95 }}
             onClick={() => handlePick(choice)}
-            className="bg-white shadow-md rounded-2xl p-4 text-center hover:bg-kid-yellow/10 transition-colors"
+            className="rounded-3xl bg-white shadow-md p-4 text-center hover:bg-kid-yellow/10 transition-colors"
           >
-            <div className="text-3xl font-bold">{choice.char}</div>
+            <div className="text-4xl font-extrabold text-gray-800 mb-1">{choice.char}</div>
+            <div className="text-xs text-gray-400">{choice.theme}</div>
           </motion.button>
         ))}
       </div>
 
-      <AnimatePresence>
-        {feedback && (
-          <motion.div
-            initial={{ scale: 0 }}
-            animate={{ scale: 1 }}
-            exit={{ scale: 0 }}
-            className="text-center text-lg font-bold mt-3 text-kid-green"
-          >
-            {feedback}
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <div className="text-center mt-3">
-        <span className="text-kid-orange font-bold">⭐ {score} 分</span>
-        <span className="ml-4 text-sm text-gray-300">{round + 1}/{chars.length}</span>
-        <button onClick={onDone} className="ml-4 text-sm text-gray-400 underline">退出</button>
+      <div className="flex justify-center gap-3 text-sm">
+        <button onClick={speakAnswer} className="text-kid-blue font-bold underline">再听一遍</button>
+        <button onClick={() => window.speechSynthesis.cancel()} className="text-gray-400 underline">停止播放</button>
       </div>
-    </div>
+
+      <div className="text-center text-sm text-gray-500 min-h-[24px] mt-3">{feedback || '先听，再看词语提示，选出真正的汉字。'}</div>
+    </GameShell>
   )
 }

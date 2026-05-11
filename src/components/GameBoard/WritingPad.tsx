@@ -2,9 +2,11 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { motion } from 'framer-motion'
 import type { Character } from '@/types'
 import { getLoadedAllCharacters } from '@data/index'
+import type { PracticeDifficulty } from '@/services/practiceCenter'
 
 interface GameProps {
   onDone?: () => void
+  difficulty?: PracticeDifficulty
 }
 
 function getRandomChar(): Character {
@@ -20,13 +22,34 @@ function getRandomChar(): Character {
   return all[Math.floor(Math.random() * all.length)]
 }
 
-export function WritingPad({ onDone }: GameProps) {
-  const [current, setCurrent] = useState<Character>(() => getRandomChar())
+function getNextWritingChar(mode: 'easy' | 'challenge'): Character {
+  const all = getLoadedAllCharacters()
+  if (all.length === 0) return getRandomChar()
+
+  const filtered = all.filter((char) => {
+    if (mode === 'easy') return char.strokeCount <= 6
+    return char.strokeCount >= 7
+  })
+
+  const source = filtered.length > 0 ? filtered : all
+  return source[Math.floor(Math.random() * source.length)]
+}
+
+export function WritingPad({ onDone, difficulty }: GameProps) {
+  const initialMode = difficulty?.writingMode === 'challenge'
+    ? 'challenge'
+    : difficulty?.writingMode === 'mixed'
+      ? 'easy'
+      : 'easy'
+  const [mode, setMode] = useState<'easy' | 'challenge'>(initialMode)
+  const [current, setCurrent] = useState<Character>(() => getNextWritingChar('easy'))
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [isDrawing, setIsDrawing] = useState(false)
   const [score, setScore] = useState(0)
   const [strokeIndex, setStrokeIndex] = useState(0)
   const [resolvedStrokeCount, setResolvedStrokeCount] = useState<number | null>(null)
+  const [streak, setStreak] = useState(0)
+  const [feedback, setFeedback] = useState('')
   const lastPos = useRef<{ x: number; y: number } | null>(null)
 
   const displayStrokeCount = resolvedStrokeCount ?? current.strokeCount
@@ -70,6 +93,19 @@ export function WritingPad({ onDone }: GameProps) {
     setStrokeIndex(0)
     drawGuide()
   }, [current.char])
+
+  useEffect(() => {
+    setCurrent(getNextWritingChar(mode))
+    setFeedback(mode === 'easy' ? '先从 6 画以内的字开始热身。' : '挑战更复杂的汉字，试试看！')
+  }, [mode])
+
+  useEffect(() => {
+    if (difficulty?.writingMode === 'challenge') {
+      setMode('challenge')
+    } else {
+      setMode('easy')
+    }
+  }, [difficulty?.writingMode])
 
   const drawGuide = useCallback(() => {
     const canvas = canvasRef.current
@@ -144,9 +180,12 @@ export function WritingPad({ onDone }: GameProps) {
     setStrokeIndex((i) => {
       const next = i + 1
       if (next >= strokes.length) {
-        setScore((s) => s + 5)
+        setScore((s) => s + 5 + Math.min(6, streak * 2))
+        setStreak((value) => value + 1)
+        setFeedback('🎉 这个字完成啦，继续写下一个！')
         setTimeout(() => {
-          setCurrent(getRandomChar())
+          setCurrent(getNextWritingChar(mode))
+          setFeedback('')
         }, 400)
         return 0
       }
@@ -158,6 +197,7 @@ export function WritingPad({ onDone }: GameProps) {
 
   const handleDoneStroke = () => {
     setScore((s) => s + 3)
+    setFeedback('✅ 这一笔完成啦！')
     handleNext()
     clearCanvas()
   }
@@ -166,10 +206,31 @@ export function WritingPad({ onDone }: GameProps) {
     <div className="card-kid p-6 max-w-md mx-auto">
       <div className="text-center mb-3">
         <div className="text-kid-purple font-bold text-lg mb-1">✏️ 描红工坊</div>
+        <div className="flex justify-center gap-2 mb-3">
+          <button
+            onClick={() => setMode('easy')}
+            className={`px-4 py-1 rounded-full text-sm font-bold transition-colors ${
+              mode === 'easy' ? 'bg-kid-green text-white' : 'bg-kid-green/10 text-kid-green'
+            }`}
+          >
+            轻松练
+          </button>
+          <button
+            onClick={() => setMode('challenge')}
+            className={`px-4 py-1 rounded-full text-sm font-bold transition-colors ${
+              mode === 'challenge' ? 'bg-kid-purple text-white' : 'bg-kid-purple/10 text-kid-purple'
+            }`}
+          >
+            挑战练
+          </button>
+        </div>
         <div className="text-3xl font-extrabold text-gray-700 mb-1">{current.char}</div>
         <div className="text-sm text-gray-400">
           部首：{current.radical} | {displayStrokeCount}画
           {strokes.length > 0 && ` | 当前第 ${strokeIndex + 1} 笔：${strokes[strokeIndex]}`}
+        </div>
+        <div className="text-xs text-gray-400 mt-1">
+          词语提示：{current.words[0]?.word || current.char} | 主题：{current.theme}
         </div>
       </div>
 
@@ -225,6 +286,8 @@ export function WritingPad({ onDone }: GameProps) {
         >
           ⭐ {score} 分
         </motion.span>
+        <div className="text-sm text-kid-green font-bold mt-2">🔥 连写 {streak} 个字</div>
+        <div className="text-xs text-gray-400 mt-1 min-h-[20px]">{feedback || '跟着笔画顺序慢慢写，写完一个字就能闯下一关。'}</div>
       </div>
     </div>
   )
